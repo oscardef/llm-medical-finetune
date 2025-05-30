@@ -43,4 +43,32 @@ pip install torch transformers accelerate
 * `--prompt`: Text prompt to generate from
 * `--max_new_tokens`: Number of tokens to generate (default: 64)
 
+## Running on RCP Cluster
+
+These steps assume you have access to EPFL’s protected container registry (`registry.rcp.epfl.ch`) under your GASPAR credentials.
+
+```bash
+# 1. Login to registry
+docker login registry.rcp.epfl.ch
+# → Enter your GASPAR username and password
+
+# 2. Build Docker image
+docker build --platform linux/amd64 \
+  --build-arg LDAP_USERNAME=<your_username> \
+  --build-arg LDAP_UID=<your_uid> \
+  --build-arg LDAP_GROUPNAME=<your_groupname> \
+  --build-arg LDAP_GID=<your_gid> \
+  -t registry.rcp.epfl.ch/llm-medical-finetune/med-llm:0.1 \
+  .
+
+# 3. Push image
+docker push registry.rcp.epfl.ch/llm-medical-finetune/med-llm:0.1
+
+# 4. Run container
+docker run -it registry.rcp.epfl.ch/llm-medical-finetune/med-llm:0.1 sh
+
+# 5. Logout from registry
+docker logout registry.rcp.epfl.ch
+
+
 ---
