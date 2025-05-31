@@ -14,3 +14,4 @@ data_conversation/train_conversations.json
 data_conversation/train.csv
 data_conversation/test_conversations.json
 data_conversation/test.csv
+runai
