@@ -36,13 +36,16 @@ COPY ./ /home/${LDAP_USERNAME}
 # Set your user as owner of the new copied files
 RUN chown -R ${LDAP_USERNAME}:${LDAP_GROUPNAME} /home/${LDAP_USERNAME}
 
-# Install required packages
-RUN apt update
-RUN apt install python3-pip -y
-
-# Set the working directory in your user's home
 WORKDIR /home/${LDAP_USERNAME}
+
+# install Python3, pip & your PyPI deps as root
+RUN apt update \
+ && apt install -y python3 python3-pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && rm -rf /var/lib/apt/lists/*
+
+# now switch to the EPFL user
 USER ${LDAP_USERNAME}
 
-# Install additional dependencies
-RUN pip install -r requirements.txt
+ENTRYPOINT ["python3","run_pretrained.py"]
+CMD ["--help"]
