@@ -125,6 +125,7 @@ def load_8bit_lora(base_id: str):
             config=config,
             device_map="auto",
             quantization_config=bnb_cfg,
+            
         )
     else:
         device_map = "auto" if (torch.cuda.is_available() or torch.backends.mps.is_built()) else None
