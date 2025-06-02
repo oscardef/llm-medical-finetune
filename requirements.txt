@@ -4,15 +4,25 @@
 # Transformers 4.52.4 + Datasets 3.6.0 + PEFT 0.15.2
 # -------------------------------------------
 
-torchvision==0.18.1
-transformers==4.52.4
-datasets==3.6.0
-sentencepiece>=0.1.97
-peft==0.15.2
+# torchvision==0.18.1
+# transformers==4.52.4
+# datasets==3.6.0
+# sentencepiece>=0.1.97
+# peft==0.15.2
+# torch>=2.0.0,<3.0.0
+# transformers>=4.52.4,<5.0.0
+# datasets>=3.6.0,<4.0.0
+# peft>=0.15.2,<0.16.0
+# bitsandbytes>=0.42.0,<0.43.0
+# accelerate>=1.7.0,<1.8.0
+# accelerate==1.7.0
+
+
+# Minimal requirements for macOS + MPS support:
 torch>=2.0.0,<3.0.0
 transformers>=4.52.4,<5.0.0
 datasets>=3.6.0,<4.0.0
-peft>=0.15.2,<0.16.0
-bitsandbytes>=0.42.0,<0.43.0
-accelerate>=1.7.0,<1.8.0
-accelerate==1.7.0
+sentencepiece>=0.1.97
+peft==0.14.0
+bitsandbytes>=0.40.0,<0.43.0
+accelerate>=0.20.0,<0.23.0
