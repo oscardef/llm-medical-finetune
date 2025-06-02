@@ -1,51 +1,49 @@
 #####################################
-# RCP CaaS requirement (Image)
+# Use NVIDIA’s official PyTorch 23.11 GPU image
 #####################################
-# The best practice is to use an image
-# with GPU support pre-built by Nvidia.
-# https://catalog.ngc.nvidia.com/orgs/nvidia/containers/
-
-# For example, if you want to use an image with pytorch already installed
-# FROM nvcr.io/nvidia/pytorch:23.11-py3
-
-# TUTORIAL ONLY
-# In this example we'll use a smaller image to speed up the build process.
-# Basic image based on ubuntu 22.04
-FROM docker.io/library/ubuntu:22.04
+FROM nvcr.io/nvidia/pytorch:23.11-py3
 
 #####################################
-# RCP CaaS requirement (Storage)
+# RCP CaaS requirement (Storage / user mapping)
 #####################################
-# Create your user inside the container.
-# This block is needed to correctly map
-# your EPFL user id inside the container.
-# Without this mapping, you are not able
-# to access files from the external storage.
 ARG LDAP_USERNAME
 ARG LDAP_UID
 ARG LDAP_GROUPNAME
 ARG LDAP_GID
-RUN groupadd ${LDAP_GROUPNAME} --gid ${LDAP_GID}
-RUN useradd -m -s /bin/bash -g ${LDAP_GROUPNAME} -u ${LDAP_UID} ${LDAP_USERNAME}
-#####################################
 
-# Copy your code inside the container
+# Create the EPFL user/group inside the container
+RUN groupadd "${LDAP_GROUPNAME}" --gid "${LDAP_GID}" \
+ && useradd  -m -s /bin/bash -g "${LDAP_GROUPNAME}" -u "${LDAP_UID}" "${LDAP_USERNAME}"
+
+# Copy your local code into the container
 RUN mkdir -p /home/${LDAP_USERNAME}
 COPY ./ /home/${LDAP_USERNAME}
 
-# Set your user as owner of the new copied files
+# Make sure the EPFL user owns everything
 RUN chown -R ${LDAP_USERNAME}:${LDAP_GROUPNAME} /home/${LDAP_USERNAME}
 
 WORKDIR /home/${LDAP_USERNAME}
 
-# install Python3, pip & your PyPI deps as root
-RUN apt update \
- && apt install -y python3 python3-pip \
- && pip install --no-cache-dir -r requirements.txt \
- && rm -rf /var/lib/apt/lists/*
-
-# now switch to the EPFL user
+#####################################
+# Switch to the unprivileged EPFL user
+#####################################
 USER ${LDAP_USERNAME}
 
-ENTRYPOINT ["python3","run_pretrained.py"]
+# By default, NVIDIA’s PyTorch image already has:
+#   • CUDA 12.6 runtime + cuDNN + NCCL 
+#   • Torch 2.7.0 + torchvision (matching CUDA version)
+#   • bitsandbytes (if you chose the “-bpc” or “-bfloat” variants; otherwise pip‐install it)
+#
+# So you only need to pip install your extra Python requirements.
+
+# Copy only the files we actually need (no data_*/ directories)
+COPY finetune_lora.py requirements.txt /home/${LDAP_USERNAME}/
+
+# Upgrade pip, then install Python dependencies
+RUN python3 -m pip install --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && rm -rf ~/.cache/pip
+
+# Finally, point ENTRYPOINT at your training/fine-tuning script
+ENTRYPOINT ["python3","finetune_lora.py"]
 CMD ["--help"]

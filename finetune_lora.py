@@ -38,7 +38,7 @@ def parse_args():
 # ──────────────────────────────────────────────────────────────────────────────
 def load_8bit_lora(base_id):
     bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
-    tok = AutoTokenizer.from_pretrained(base_id, use_fast=False)
+    tok = AutoTokenizer.from_pretrained(base_id, use_fast=True)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
     base = AutoModelForCausalLM.from_pretrained(
