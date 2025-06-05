@@ -13,36 +13,34 @@ ARG LDAP_GID
 
 # 1) Create the EPFL user/group inside the container
 RUN groupadd "${LDAP_GROUPNAME}" --gid "${LDAP_GID}" \
- && useradd  -m -s /bin/bash -g "${LDAP_GROUPNAME}" -u "${LDAP_UID}" "${LDAP_USERNAME}"
-
-# 2) Copy your local code into /home/<user>
-RUN mkdir -p /home/${LDAP_USERNAME}
-COPY ./ /home/${LDAP_USERNAME}
-
-# 3) Fix ownership
-RUN chown -R ${LDAP_USERNAME}:${LDAP_GROUPNAME} /home/${LDAP_USERNAME}
+ && useradd -m -s /bin/bash -g "${LDAP_GROUPNAME}" -u "${LDAP_UID}" "${LDAP_USERNAME}"
 
 WORKDIR /home/${LDAP_USERNAME}
 
 #####################################
-# By default, NVIDIA’s image already has:
-#   • CUDA 12.6 runtime + cuDNN + NCCL 
-#   • Torch 2.7.0 + torchvision (matching CUDA version)
-#   • bitsandbytes (unsure of version—just re‐install 0.42.0 below)
-#   • (No guarantee on accelerate/transformers versions)
+# 2) Copy only requirements.txt first (to leverage Docker cache)
 #####################################
+#    If requirements.txt doesn't change, this layer is cached and 
+#    we skip re-installing Python packages on every code update.
+COPY requirements.txt /home/${LDAP_USERNAME}/requirements.txt
 
-# 4) As root: upgrade pip + setuptools, install exactly our requirements.txt
-#    (so that any pre‐installed transformers/accelerate get overridden).
-RUN python3 -m pip install --upgrade pip setuptools wheel \
- && pip install --no-cache-dir -r requirements.txt \
- && rm -rf /root/.cache/pip
+# 3) As root: install Python dependencies
+USER root
+RUN pip install -r requirements.txt
 
 #####################################
-# Switch to the unprivileged EPFL user
+# 4) Copy the rest of your application code
+#####################################
+COPY --chown=${LDAP_USERNAME}:${LDAP_GROUPNAME} . /home/${LDAP_USERNAME}/
+
+#####################################
+# 5) Switch to the unprivileged EPFL user
 #####################################
 USER ${LDAP_USERNAME}
+WORKDIR /home/${LDAP_USERNAME}
 
-# 5) ENTRYPOINT to your training script
+#####################################
+# 6) ENTRYPOINT to your training script
+#####################################
 ENTRYPOINT ["python3", "finetune_lora.py"]
 CMD ["--help"]

@@ -1,2 +1,6 @@
 data_conversation/
 data_questions/
+lora_ckpts/
+__pycache__/
+*.pyc
+.git/
