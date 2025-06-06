@@ -442,19 +442,72 @@ Running locally is mainly useful for development, debugging, or small-scale expe
 
 Below we highlight contributions from **Oscar** (the author of this README and a contributor for the infrastructure and implementation in this repo):
 
-* **Research & Planning:** Investigated suitable base models for medical Q\&A, ultimately selecting **Mistral-7B** for its strong performance and open availability, as well as **TinyMistral-248M** for testing purposes. Explored how to download and run these models (e.g., created `run_pretrained.py` to validate model inference and get familiar with the HF model APIs). Studied the EPFL RCP cluster documentation in detail and took notes to plan the integration of our workflow with RCP.
+* **Research & Planning**
 
-* **Environment Setup (Repo & Cluster):** Initialized this GitHub repository and set up all necessary configurations. Developed the **Docker environment** for RCP: wrote the `Dockerfile` with the EPFL user mapping and dependency installation, ensuring compatibility with RCP’s NVIDIA base image and cluster storage requirements. Conducted extensive testing with the RCP cluster to figure out how to authenticate, mount storage (NAS scratch and home), and use Run\:AI and `kubectl` effectively. Created the detailed **RCP setup and usage guide** (now part of this README) to document the step-by-step process for colleagues. Set up the project’s container registry on Harbor (`llm-medical-finetune` project in RCP registry) and pushed the initial Docker image. Determined the strategy for data storage: identified NAS3 scratch as the location for training data and uploaded the necessary JSON files there for cluster access.
+  * Researched various open-source pretrained language models and selected **Mistral-7B** for full-scale medical fine-tuning and **TinyMistral-248M** for local testing and proof-of-concept.
+  * Created `run_pretrained.py` to experiment with downloading, loading, and generating from those base models, verifying compatibility with Hugging Face APIs and ensuring that the inference workflow works before any fine-tuning.
+  * Read EPFL RCP cluster documentation in detail and took extensive notes on authentication, storage mounts (NAS1 / NAS3), GPU allocation, and Run\:AI / `kubectl` usage. Those notes informed the step-by-step RCP instructions in this README.
 
-* **Fine-Tuning Pipeline Implementation:** Wrote and refined the `finetune_lora.py` script to handle training both on a local Mac (CPU/MPS) and on the GPU cluster seamlessly. This involved adding support for 8-bit model loading (via BitsAndBytes) and addressing various issues encountered during development. For example, ensured that the **tokenizer is properly configured** (using `padding_side="right"` and defining `pad_token_id` to avoid errors with padding sequences). Also fixed a critical training bug by **disabling FP16 mixed precision when using 8-bit quantization**, as the combination can cause runtime errors. Tested the training script extensively, including a successful run on 1% of the data for 1 epoch with TinyMistral on an M1 Mac to validate that training works end-to-end on CPU/MPS. This local test confirmed that the preprocessing (JSON loading, tokenization, data collation) and training loop operated correctly.
+* **Repository & Environment Setup**
 
-* **Inference and Utility Scripts:** Developed `run_lora.py` to load the fine-tuned model and interactively chat with it. This involved applying the LoRA weights to the base model using 🤗 PEFT and constructing the prompt in the same format as used in training (including the special instruction for the model to act as a medical expert). Verified that the fine-tuned model could generate sensible responses by running this script after training. Additionally, wrote the data checking utilities (e.g., `sanity_check.py` and `inspect_tokenization.py`) to debug data formatting issues early on.
+  * Initialized and organized the GitHub repository, including directories for code (`.`), data checks (`checking_data/`), and documentation.
+  * Drafted this comprehensive `README.md` that covers cloning the repo, container build/push, RCP cluster configuration, Run\:AI job submission, log/status inspection, and interactive debugging - aiming to make the entire workflow reproducible for new users.
+  * Developed the Docker environment for RCP:
 
-* **Hugging Face Integration:** Implemented the handling of Hugging Face Hub authentication across the training and inference workflow. Specifically, made sure that the scripts look for the `HF_HUB_TOKEN` environment variable and use it to authenticate when loading the Mistral-7B model. This was crucial for running on the cluster where the model must be downloaded at runtime without manual intervention. Documenting this in the usage (e.g., prompting users to `export HF_HUB_TOKEN="hf_XXXX"` before running).
+    * Wrote the `Dockerfile` that builds from NVIDIA’s PyTorch 23.11 CUDA 12.6 base image, installs all Python dependencies (from `requirements.txt`), and creates a container user matching EPFL LDAP credentials (`LDAP_USERNAME`, `LDAP_UID`, `LDAP_GROUPNAME`, `LDAP_GID`) to avoid file-permission issues when mounting NAS volumes.
+    * Verified that all required packages (Transformers, Datasets, PEFT, BitsAndBytes, Accelerate, etc.) install correctly and that the code inside (training and inference scripts) runs without errors in the container.
+  * Created the EPFL RCP Harbor project `llm-medical-finetune` and pushed the initial Docker image (`med-llm:0.1`) to `registry.rcp.epfl.ch/llm-medical-finetune/med-llm:0.1`. Tagged subsequent images (e.g. `:0.4`) to reflect updates.
+  * Determined and documented the storage strategy on RCP: use NAS3 scratch (`/mnt/sdsc-ge/scratch/`) for large training data and model outputs, and NAS1 home (`/mnt/nas1/home/…`) for any long-term storage or small config files.
+  * Uploaded the necessary JSON datasets (`train_conversations.json`, `train_formatted.json`, etc.) to NAS3 scratch via `scp` and verified their paths on the RCP jump host.
 
-* **Cluster Orchestration & Testing:** Orchestrated the end-to-end training and inference on the RCP cluster. Wrote the Run\:AI submission commands for different scenarios (as documented above) and tested them. Debugged issues like volume mount permissions (hence the user mapping in Dockerfile), networking, and resource limits. Through iterative testing, ensured that a training job could download the model, read the data from scratch, train for several steps, save outputs to scratch, and that an inference job could load the fine-tuned model and produce an output. This work involved checking logs (`runai logs`) and using interactive sessions (`runai bash`) to troubleshoot in the live container environment, refining the process until it was smooth.
+* **Fine-Tuning Pipeline Implementation (`finetune_lora.py`)**
 
-In summary, the contributions span the full lifecycle of this project: from initial model research and environment setup to writing and debugging the training code, and finally deploying and testing on the target infrastructure. The comprehensive instructions and scripts in this repository are largely the result of Oscar's implementation efforts and learnings throughout the project.
+  * Rewrote and refactored the fine-tuning script to handle both local (Mac M1 CPU/MPS) and RCP (GPU + 8-bit quantization) environments seamlessly.
+
+    * Added logic to detect CUDA and load the base model in 8-bit via BitsAndBytes (when on GPU), or full-precision on CPU/MPS. Ensured that the HF token and `trust_remote_code=True` are passed when loading gated models (e.g., `mistralai/Mistral-7B-v0.1`).
+    * Configured the tokenizer to use **right-padding** (`tokenizer.padding_side = "right"`) and set `pad_token_id = eos_token_id` if missing, to avoid training errors when padding input sequences.
+    * Implemented the `<s>[INST] {instruction} {input} [/INST] {output} </s>` prompt schema exactly, then masked out prompt tokens in the labels (setting them to `-100`) so that the model only computes loss on the generated response.
+    * Defined a LoRA configuration (`r=8`, `lora_alpha=16`, `lora_dropout=0.05`, `target_modules=["q_proj","k_proj","v_proj","o_proj"]`) to inject trainable adapters into the model’s self-attention projections.
+    * Wrapped the model with PEFT’s `get_peft_model` and called `prepare_model_for_kbit_training` to properly handle 8-bit quantization adjustments.
+    * Diagnosed and fixed a critical training bug where `fp16=True` and 8-bit quantization conflicted; forced `fp16=False` whenever loading the model in 8-bit mode to prevent runtime errors.
+    * Thoroughly tested local fine-tuning on TinyMistral-248M (using 1% of the data for 1 epoch) on a Mac M1. Verified that JSON loading, tokenization, data sharding, Trainer loop, and output saving all work correctly on CPU/MPS.
+  * Configured the Trainer to use gradient accumulation, a customizable learning rate, and a flexible batch size. Added command-line arguments (`--epochs`, `--bsz`, `--grad_accum`, etc.) so the same script can be run on Mac or RCP with minimal changes.
+
+* **Inference & Utility Scripts**
+
+  * Developed `run_lora.py` to load the base model (Mistral-7B or TinyMistral-248M), apply the saved LoRA adapter weights (from `lora_adapter` directory), and offer an **interactive chat loop** with user prompts wrapped in the same `<s>[INST]…[/INST]` format. Ensured that:
+
+    * The base model and adapter are loaded to `torch_dtype=torch.float16` on CUDA or `torch.float32` on CPU.
+    * The LoRA adapter is applied using `PeftModel.from_pretrained(...)` with `trust_remote_code=False`.
+    * The tokenizer is re-initialized with the same padding settings and a valid `pad_token_id`.
+    * Generation uses `max_new_tokens`, `temperature`, and `top_k` parameters to control decoding.
+  * Verified that the fine-tuned model can generate coherent medical advice in interactive mode, demonstrating the complete train>save>load>generate pipeline.
+  * Wrote data-checking utilities under `checking_data/`:
+
+    * `sanity_check.py` to print out a few raw JSON examples from the conversation and QCM datasets to confirm field names and text formatting.
+    * `inspect_tokenization.py` to show exactly how a single example is tokenized into input IDs, attention masks, prompt lengths, and labels. This helped catch early tokenization issues (e.g., missing special tokens, incorrect mask indexing).
+
+* **Hugging Face Hub Integration**
+
+  * Ensured all training and inference scripts check for the `HF_HUB_TOKEN` environment variable and pass it into any `from_pretrained(...)` calls when loading gated models (such as Mistral-7B).
+  * Documented the need to `export HF_HUB_TOKEN="hf_XXXXXXXXXXXX"` before running training or inference on the cluster or locally. This avoids manual login prompts inside the container and prevents “access denied” errors when fetching model files.
+  * When cluster jobs require the token, we passed it via the `--e HF_HUB_TOKEN=<token>` flag in `runai submit` commands, ensuring seamless model downloads at runtime.
+
+* **Cluster Orchestration & Testing**
+
+  * Created and validated **Run\:AI submission commands** for multiple scenarios:
+
+    * **Test sleep job** that simply requests a fractional GPU (`--gpu 0.1`) and runs `sleep 60`, verifying that the Docker image pulls correctly, the GPU is allocated, and volumes mount properly.
+    * **TinyMistral fine-tuning job** (`--gpu 1 --epochs 2 --bsz 2 --grad_accum 8`) to sanity-check that training on a small model works end-to-end on RCP.
+    * **Mistral-7B fine-tuning job** (`--gpu 1 --epochs 10 --bsz 2 --grad_accum 8 --learning_rate 1e-4`) to run full-scale LoRA training on the cluster’s GPU nodes, loading data from NAS3 scratch and saving adapter weights back to scratch.
+    * **Inference job** for TinyMistral (`run_pretrained.py`), allocating a small GPU fraction and generating a short explanation of diabetes, confirming that inference works in the cluster environment.
+    * **Interactive jobs** by using `runai bash <job-name>` to open a shell inside a running container, enabling live debugging (checking `nvidia-smi`, inspecting `/scratch` contents, etc.).
+  * Debugged volume mount permission issues by adjusting container user mapping (via `LDAP_USERNAME`, `LDAP_UID`, `LDAP_GID`, `LDAP_GROUPNAME` build arguments) so that files written to `/scratch` and `/home` have the correct owner and permissions.
+  * Monitored job logs diligently (`runai logs <job>`), identified and fixed runtime errors (e.g., missing `config.json` warnings, label\_names warning from `PeftModelForCausalLM`), and iterated until the pipeline ran smoothly from data load through training to model export.
+  * Documented best practices for inspecting Kubernetes contexts (`kubectl config get-contexts`), verifying PVCs (`kubectl get pvc -n runai-sdsc-ge-<USERNAME>`), and diagnosing scheduling issues or resource shortages.
+
+In summary, this project’s contributions cover everything from initial model selection and local testing to building a production-ready container, orchestrating jobs on EPFL’s RCP cluster, and writing the scripts that train and deploy a medical-domain LoRA-adapted LLM. The bullet points above capture each discrete task that was completed to make the entire workflow reproducible and robust for both local and cloud environments.
+
 
 ---
 
