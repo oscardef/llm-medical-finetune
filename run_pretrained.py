@@ -1,4 +1,3 @@
-# run_pretrained.py
 import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer

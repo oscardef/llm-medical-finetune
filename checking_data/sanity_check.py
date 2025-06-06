@@ -1,7 +1,6 @@
-# sanity_check.py
 import json
 
-# paths to your files
+# paths to files
 conv_path = "../data_conversation/train_conversations.json"
 qcm_path  = "../data_questions/train_formatted.json"
 

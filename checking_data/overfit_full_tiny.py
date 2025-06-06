@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# overfit_full_tiny.py
-
 import torch
 from datasets import Dataset
 from transformers import (
@@ -120,7 +117,7 @@ training_args = TrainingArguments(
     gradient_accumulation_steps=1,
     num_train_epochs=15,
     learning_rate=2e-4,
-    save_strategy="no",           # <--- disable all checkpoints
+    save_strategy="no", # disable all checkpoints
     logging_steps=2,
     fp16=use_fp16,
     report_to="none",

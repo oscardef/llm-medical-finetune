@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# overfit_full_tiny_lora_fixed.py
-
 import torch
 from datasets import Dataset
 from transformers import (
@@ -12,7 +9,7 @@ from transformers import (
 )
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training, PeftModel
 
-# ─── 1) Five toy conversation examples ───────────────────────────────────────
+# 1) Five conversation examples
 examples = [
     {
       "instruction": "You are a medical doctor expert. Here is a conversation with a patient—give them a solution or an answer:",
@@ -114,7 +111,7 @@ examples = [
     },
 ]
 
-# ─── 2) Build a HF Dataset from those 5 examples ──────────────────────────────
+#2) Build a HF Dataset from those 5 examples
 raw = {
     "instruction": [e["instruction"] for e in examples],
     "input":       [e["input"]       for e in examples],
@@ -122,14 +119,14 @@ raw = {
 }
 dataset = Dataset.from_dict(raw)
 
-# ─── 3) Load TinyMistral tokenizer ─────────────────────────────────────────
+# 3) Load TinyMistral tokenizer
 base_model_id = "Locutusque/TinyMistral-248M"
 tokenizer = AutoTokenizer.from_pretrained(base_model_id, use_fast=True)
 tokenizer.padding_side = "right"
 if tokenizer.pad_token_id is None:
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
-# ─── 4) Tokenization + label masking ───────────────────────────────────────
+# 4) Tokenization + label masking
 def tokenize_and_mask(ex):
     prompt = f"<s>[INST] {ex['instruction']} {ex['input']} [/INST] "
     answer = f"{ex['output']} </s>"
@@ -162,7 +159,7 @@ def tokenize_and_mask(ex):
 
 train_ds = dataset.map(tokenize_and_mask, remove_columns=["instruction", "input", "output"])
 
-# ─── 5) Load TinyMistral + attach LoRA ──────────────────────────────────────
+# 5) Load TinyMistral + attach LoRA
 config = AutoConfig.from_pretrained(base_model_id)
 config.model_parallel = False
 setattr(config, "tensor_parallel", False)
@@ -253,7 +250,7 @@ if torch.cuda.is_available():
     # k‐bit preparation for GPU (if needed)
     model = prepare_model_for_kbit_training(model)
 
-# ─── 6) TrainingArguments (higher LR + fewer epochs) ────────────────────────
+# 6) TrainingArguments (higher LR + fewer epochs)
 training_args = TrainingArguments(
     output_dir="overfit_full_tiny_lora_results",
     per_device_train_batch_size=1,
@@ -276,7 +273,7 @@ print(">>> Starting LoRA‐only overfit on TinyMistral (five examples)…")
 trainer.train()
 print(">>> LoRA overfit complete.\n")
 
-# ─── 7) Save adapter and reload for inference ───────────────────────────────
+# 7) Save adapter and reload for inference
 model.save_pretrained("overfit_full_tiny_lora_results/adapter_model")
 
 print(">>> Reloading base TinyMistral + LoRA adapter for inference…")
@@ -293,7 +290,7 @@ model = PeftModel.from_pretrained(
 )
 model.eval()
 
-# ─── 8) Generate from each prompt and compare ───────────────────────────────
+# 8) Generate from each prompt and compare
 for idx, ex in enumerate(examples):
     # Rebuild the prompt exactly as during training
     prompt_only = f"<s>[INST] {ex['instruction']} {ex['input']} [/INST] "

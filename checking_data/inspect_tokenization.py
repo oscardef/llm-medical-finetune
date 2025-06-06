@@ -1,5 +1,3 @@
-# inspect_tokenization.py
-
 from transformers import AutoTokenizer
 
 # 1) Load tokenizer and force "right" padding
@@ -7,7 +5,7 @@ base_model = "Locutusque/TinyMistral-248M"
 tokenizer = AutoTokenizer.from_pretrained(base_model, use_fast=True)
 tokenizer.padding_side = "right"
 
-# 2) One example from your conversation JSON
+# 2) One example from conversation JSON
 instruction = (
     "You are a medical doctor expert. Here is a conversation with a patient—"
     "give them a solution or an answer:"
