@@ -1,36 +1,49 @@
+#!/usr/bin/env python3
 """
 finetune_lora.py
 
-Fine-tune a pretrained causal-LM with LoRA on two JSON files:
-  1) Conversation data (data_conversation/*.json)
-  2) MCQ data (data_questions/*.json)
+Fine-tune a pretrained causal-LM with LoRA + DeepSpeed Stage 3 on RCP.
+Eliminates HF/PEFT/BnB warnings at the root, batches & caches tokenization,
+uses FP16 + 8-bit AdamW, and scales across multiple GPUs.
 
-All hyperparameters are passed in via command-line, so you can run
-identical commands on your Mac (CPU/MPS) or on RCP (GPU).
-
-Requirements (Mac/venv or RCP Docker):
-    pip install transformers datasets sentencepiece peft bitsandbytes accelerate
-
-Example usage (Mac or RCP):
-
-    python3 finetune_lora.py \
-      --base_model   Locutusque/TinyMistral-248M \
-      --conv_json    data_conversation/train_conversations.json \
-      --qcm_json     data_questions/train_formatted.json \
-      --output_dir   lora_ckpts \
+Usage under torchrun (8 GPUs):
+  export HF_HUB_TOKEN="hf_XXXXX"
+  export MASTER_ADDR=127.0.0.1
+  export MASTER_PORT=29500
+  torchrun \
+    --nnodes=1 \
+    --nproc_per_node=8 \
+    finetune_lora.py \
+      --base_model   mistralai/Mistral-7B-v0.1 \
+      --conv_json    /scratch/data/data_conversation/train_conversations.json \
+      --qcm_json     /scratch/data/data_questions/train_formatted.json \
+      --output_dir   /scratch/lora_ckpts_mistral7b \
       --train_pct    100 \
-      --epochs       1 \
+      --epochs       10 \
       --bsz          2 \
-      --grad_accum   4 \
-      --learning_rate 2e-4 \
-      --max_len      1024 \
-      --save_steps   200
+      --grad_accum   8 \
+      --learning_rate 1e-4 \
+      --max_len      512 \
+      --save_steps   500
 """
 
+import os, warnings
+# ──────────────────────────────────────────────────────────────────────────────
+# 1) Eliminate Python‐level warnings at import time
+warnings.filterwarnings("ignore")
+
+from transformers import logging as hf_logging
+from peft import logging as peft_logging
+import bitsandbytes as bnb
+
+hf_logging.set_verbosity_error()     # silence 🤗 Transformers below ERROR
+peft_logging.set_verbosity_error()   # silence 🤗 PEFT below ERROR
+bnb.logging.set_verbosity_error()    # silence bitsandbytes logs below ERROR
+# ──────────────────────────────────────────────────────────────────────────────
+
 import argparse
-import os
 import torch
-from datasets import load_dataset, concatenate_datasets
+from datasets import load_dataset, concatenate_datasets, Dataset
 from transformers import (
     AutoConfig,
     AutoTokenizer,
@@ -42,215 +55,179 @@ from transformers import (
 )
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
+
 def parse_args():
-    p = argparse.ArgumentParser(description="LoRA-fine­tune a pretrained causal-LM on JSON data")
-    # Required arguments
-    p.add_argument(
-        "--base_model",
-        type=str,
-        required=True,
-        help="HuggingFace model ID (e.g. TinyMistral-248M or mistralai/Mistral-7B-v0.1)",
-    )
-    p.add_argument(
-        "--conv_json", type=str, required=True, help="Path to conversation JSON file"
-    )
-    p.add_argument(
-        "--qcm_json", type=str, required=True, help="Path to MCQ JSON file"
-    )
-    p.add_argument(
-        "--output_dir", type=str, required=True, help="Directory to save the LoRA-adapted model"
-    )
-
-    # Hyperparameters
-    p.add_argument(
-        "--train_pct",
-        type=float,
-        default=100.0,
-        help="Percentage (0-100) of each dataset to keep",
-    )
-    p.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
-    p.add_argument("--bsz", type=int, default=2, help="Per-device train batch size")
-    p.add_argument(
-        "--grad_accum", type=int, default=4, help="Gradient accumulation steps"
-    )
-    p.add_argument(
-        "--learning_rate", type=float, default=2e-4, help="Learning rate"
-    )
-    p.add_argument(
-        "--max_len", type=int, default=1024, help="Max token length (padding/truncation)"
-    )
-    p.add_argument(
-        "--save_steps", type=int, default=200, help="Save checkpoint every N steps"
-    )
-
+    p = argparse.ArgumentParser()
+    p.add_argument("--base_model",    type=str,   required=True)
+    p.add_argument("--conv_json",     type=str,   required=True)
+    p.add_argument("--qcm_json",      type=str,   required=True)
+    p.add_argument("--output_dir",    type=str,   required=True)
+    p.add_argument("--train_pct",     type=float, default=100.0)
+    p.add_argument("--epochs",        type=int,   default=10)
+    p.add_argument("--bsz",           type=int,   default=8)
+    p.add_argument("--grad_accum",    type=int,   default=2)
+    p.add_argument("--learning_rate", type=float, default=1e-4)
+    p.add_argument("--max_len",       type=int,   default=512)
+    p.add_argument("--save_steps",    type=int,   default=1000)
     return p.parse_args()
 
 
 def load_8bit_lora(base_id: str, auth_token: str = None):
-    """
-    1) Load config and disable model_parallel/tensor_parallel.
-    2) Load tokenizer (and set pad_token_id if missing).
-    3) If CUDA is available, load model in 8-bit + LoRA; otherwise full-precision + LoRA.
-
-    We pass use_auth_token=auth_token + trust_remote_code=True for gated repos like Mistral-7B.
-    """
-    # 1) Load config and turn off model_parallel/tensor_parallel
+    # 1) Config
     config = AutoConfig.from_pretrained(
         base_id,
         use_auth_token=auth_token,
-        trust_remote_code=True
+        trust_remote_code=True,
     )
     config.model_parallel = False
     setattr(config, "tensor_parallel", False)
 
-    # 2) Load tokenizer
+    # 2) Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         base_id,
         use_fast=True,
         use_auth_token=auth_token,
-        trust_remote_code=True
+        trust_remote_code=True,
     )
-    # Force right-padding
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # 3) Load model (8-bit if CUDA available, else full-precision)
+    # 3) Base model (8-bit if CUDA else FP16/FP32)
     use_8bit = torch.cuda.is_available()
     if use_8bit:
-        print(">>> CUDA detected: loading model in 8-bit quantized mode + LoRA")
+        print(">>> Loading model in 8-bit + LoRA")
         bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
         base_model = AutoModelForCausalLM.from_pretrained(
             base_id,
             config=config,
-            device_map="auto",
             quantization_config=bnb_cfg,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            use_cache=False,
+            low_cpu_mem_usage=True,
             use_auth_token=auth_token,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
     else:
-        print(">>> No CUDA (or MPS only): loading full-precision model + LoRA")
+        print(">>> Loading model in full precision + LoRA")
         dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         base_model = AutoModelForCausalLM.from_pretrained(
             base_id,
             config=config,
-            device_map="auto",
             torch_dtype=dtype,
+            device_map=None,
+            use_cache=False,
             low_cpu_mem_usage=True,
             use_auth_token=auth_token,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
 
-    # 4) Apply LoRA and prepare for any 8-bit/k-bit adjustments
+    # 4) Apply LoRA + gradient checkpointing + k-bit prep
     lora_cfg = LoraConfig(
         r=8,
         lora_alpha=16,
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["q_proj","k_proj","v_proj","o_proj"],
     )
     model = get_peft_model(base_model, lora_cfg)
+    model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
 
     return tokenizer, model, use_8bit
 
 
-def subset(dataset, pct: float, seed: int = 42):
-    """
-    If pct < 100, shuffle and keep only first `pct`% of rows.
-    """
+def subset(ds: Dataset, pct: float, seed: int = 42):
     if pct >= 100.0:
-        return dataset
-    keep_n = int(len(dataset) * pct / 100.0)
-    return dataset.shuffle(seed=seed).select(range(keep_n))
+        return ds
+    n = int(len(ds) * pct / 100.0)
+    return ds.shuffle(seed=seed).select(range(n))
 
 
 def make_tokenizer_fn(tokenizer, max_len):
-    """
-    Returns a function that tokenizes {"instruction","input","output"} ->
-    input_ids, attention_mask, labels.  We use the same <s>[INST]…[/INST]…</s> schema.
-    """
-    def _fn(ex):
-        prompt = f"<s>[INST] {ex['instruction']} {ex['input']} [/INST] "
-        answer = f"{ex['output']} </s>"
+    def fn(batch):
+        prompts = [
+            f"<s>[INST] {i} {inp} [/INST] "
+            for i, inp in zip(batch["instruction"], batch["input"])
+        ]
+        answers = [out + " </s>" for out in batch["output"]]
+        full = [p + a for p, a in zip(prompts, answers)]
 
-        # 1) Tokenize prompt + answer
         enc_full = tokenizer(
-            prompt + answer,
+            full,
             truncation=True,
             max_length=max_len,
             padding="max_length",
             return_attention_mask=True,
         )
-        input_ids = enc_full["input_ids"]
-        attention_mask = enc_full["attention_mask"]
-
-        # 2) Tokenize prompt-only, compute prompt_len for masking
         enc_prompt = tokenizer(
-            prompt,
+            prompts,
             truncation=True,
             max_length=max_len,
             padding="max_length",
-            return_attention_mask=False,
         )["input_ids"]
-        prompt_len = sum(1 for tok_id in enc_prompt if tok_id != tokenizer.pad_token_id)
 
-        # 3) Build labels by masking out prompt tokens
-        labels = input_ids.copy()
-        for i in range(min(prompt_len, len(labels))):
-            labels[i] = -100
+        labels = []
+        for ids, pids in zip(enc_full["input_ids"], enc_prompt):
+            lab = ids.copy()
+            plen = sum(1 for t in pids if t != tokenizer.pad_token_id)
+            for i in range(plen):
+                lab[i] = -100
+            labels.append(lab)
 
-        return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
-
-    return _fn
+        return {
+            "input_ids":      enc_full["input_ids"],
+            "attention_mask": enc_full["attention_mask"],
+            "labels":         labels,
+        }
+    return fn
 
 
 def build_train_dataset(tokenizer, args):
-    """
-    1) Load conversation JSON + MCQ JSON.
-    2) Subset to train_pct.
-    3) Concatenate and shuffle.
-    4) Map our tokenization function.
-    """
-    # Each JSON is a “train” split of a HF-style JSON dataset
-    ds_conv = load_dataset("json", data_files=args.conv_json)["train"]
-    ds_qcm = load_dataset("json", data_files=args.qcm_json)["train"]
+    ds_c = load_dataset("json", data_files=args.conv_json)["train"]
+    ds_q = load_dataset("json", data_files=args.qcm_json)["train"]
 
-    ds_conv = subset(ds_conv, args.train_pct)
-    ds_qcm = subset(ds_qcm, args.train_pct)
+    ds_c = subset(ds_c, args.train_pct)
+    ds_q = subset(ds_q, args.train_pct)
+    ds  = concatenate_datasets([ds_c, ds_q]).shuffle(42)
 
-    train_ds = concatenate_datasets([ds_conv, ds_qcm]).shuffle(seed=42)
-
-    token_fn = make_tokenizer_fn(tokenizer, args.max_len)
-    train_ds = train_ds.map(
-        token_fn,
-        remove_columns=train_ds.column_names,
-        num_proc=4,  # reduce if your node has fewer CPU cores
+    ds = ds.map(
+        make_tokenizer_fn(tokenizer, args.max_len),
+        batched=True,
+        batch_size=2000,
+        remove_columns=ds.column_names,
+        num_proc=2,
     )
-    return train_ds
+    return ds
 
 
 def main():
-    args = parse_args()
-
-    # Grab HF token from environment, if present
+    args     = parse_args()
     hf_token = os.getenv("HF_HUB_TOKEN") or os.getenv("HF_TOKEN")
+    assert hf_token, "Set HF_HUB_TOKEN"
 
-    # 1) Load tokenizer + (8-bit or full) base model + LoRA
-    print(f">>> Loading model {args.base_model} …")
+    print(f">>> Loading {args.base_model} …")
     tokenizer, model, use_8bit = load_8bit_lora(args.base_model, auth_token=hf_token)
 
-    # 2) Build the training dataset
-    print(">>> Preparing dataset (tokenization)…")
-    train_dataset = build_train_dataset(tokenizer, args)
+    print(">>> Tokenizing dataset…")
+    train_ds = build_train_dataset(tokenizer, args)
 
-    # 3) Configure Trainer
     print(">>> Configuring Trainer…")
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # If using 8-bit, disable FP16/AMP (bitsandbytes + fp16 can conflict)
-    fp16_flag = False if use_8bit else torch.cuda.is_available()
+    ds_config = {
+      "zero_optimization": {
+        "stage": 3,
+        "stage3_gather_16bit_weights_on_model_save": True,
+        "offload_optimizer": {"device": "cpu","pin_memory": True},
+      },
+      "fp16": {"enabled": True},
+      "gradient_clipping": 1.0,
+      "train_micro_batch_size_per_gpu": args.bsz,
+      "gradient_accumulation_steps": args.grad_accum,
+    }
 
     targs = TrainingArguments(
         output_dir=args.output_dir,
@@ -260,30 +237,27 @@ def main():
         learning_rate=args.learning_rate,
         save_steps=args.save_steps,
         save_total_limit=3,
-        logging_steps=50,
-        fp16=fp16_flag,
-        report_to="none",
-        dataloader_pin_memory=False,
+        fp16=True,
+        logging_steps=200,
+        deepspeed=ds_config,
+        remove_unused_columns=False,
     )
 
     trainer = Trainer(
         model=model,
         args=targs,
-        train_dataset=train_dataset,
+        train_dataset=train_ds,
         data_collator=default_data_collator,
+        label_names=["labels"],   # suppress missing label_names warning
     )
 
-    # 4) Train
     print(">>> Starting training…")
     trainer.train()
 
-    # 5) Save final LoRA weights + tokenizer
-    print(f">>> Saving LoRA-adapter + tokenizer to {args.output_dir}")
+    print(f">>> Saving adapter + tokenizer to {args.output_dir}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-
-    print("\n✔ Training complete!")
-
+    print("✔ Done!")
 
 if __name__ == "__main__":
     main()
