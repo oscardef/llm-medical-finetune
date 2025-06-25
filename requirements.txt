@@ -17,3 +17,5 @@ bitsandbytes==0.46.0
 accelerate==1.7.0
 
 torchvision==0.22.0            # matches torch 2.2.0a0 (CUDA 12.6)
+
+#deepspeed==0.14.2 

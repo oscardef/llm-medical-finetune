@@ -148,9 +148,11 @@ def load_8bit_lora(base_id: str, auth_token: str = None):
         lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
     model = get_peft_model(base_model, lora_cfg)
+    print("Trainable params:")
+    model.print_trainable_parameters()
     model = prepare_model_for_kbit_training(model)
 
     return tokenizer, model, use_8bit
@@ -244,6 +246,10 @@ def main():
     # 2) Build the training dataset
     print(">>> Preparing dataset (tokenization)…")
     train_dataset = build_train_dataset(tokenizer, args)
+
+
+
+
 
     # 3) Configure Trainer
     print(">>> Configuring Trainer…")
