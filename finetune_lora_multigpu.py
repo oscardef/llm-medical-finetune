@@ -192,7 +192,7 @@ def main():
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
-    print("\n✔ Training complete! Adapters saved to", args.output_dir)
+    print("\n Training complete! Adapters saved to", args.output_dir)
 
 
 if __name__ == "__main__":

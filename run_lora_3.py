@@ -1,17 +1,5 @@
 #!/usr/bin/env python3
-"""
-run_lora_chat.py ────────────────────────────────────────────────────────────
-Chat interactif avec un modèle causal-LM (Mistral-7B, TinyMistral-248M, …)
-finement-ajusté par LoRA.
 
-• Charge le modèle de base en 8-bit si un GPU CUDA est dispo.
-• Applique l’adapter LoRA sauvegardé (adapter_config.json + adapter_model.safetensors)
-• Conserve l’historique USER / ASSISTANT et le tronque pour rester ≤ max_len tokens.
-• Utilise exactement le schéma de prompt vu pendant le fine-tune :
-      <s>[INST] … [/INST]  Réponse </s>
-
-Dépendances : transformers, peft, torch, bitsandbytes, accelerate
-"""
 
 import argparse, os, torch, collections
 from transformers import (
@@ -20,7 +8,8 @@ from transformers import (
 from peft import PeftModel
 
 
-# ╭─────────────────────────── CLI ────────────────────────────╮
+
+# Parse command-line arguments
 def parse_args():
     p = argparse.ArgumentParser("Chat with a LoRA-fine-tuned Mistral model")
     p.add_argument("--base_model", required=True,
@@ -40,7 +29,7 @@ def parse_args():
     return p.parse_args()
 
 
-# ╭──────────────────── Prompt helper (matches training) ───────────────────╮
+#  Prompt helper to format the user message into a prompt that the model understands
 def build_prompt(user_msg: str) -> str:
     return (
         "<s>[INST] Below is an instruction that describes a task. "
@@ -51,11 +40,12 @@ def build_prompt(user_msg: str) -> str:
     )
 
 
-# ╭─────────────────────── Model + tokenizer loader ─────────────────────────╮
+#  Model and tokenizer to load the base model and apply the LoRA weights
 def load_model_and_tok(base_id: str, lora_dir: str, token: str | None):
     cuda = torch.cuda.is_available()
     q_cfg = BitsAndBytesConfig(load_in_8bit=True) if cuda else None
 
+    # Load the base model with optional quantization if GPU is available
     base = AutoModelForCausalLM.from_pretrained(
         base_id,
         device_map="auto" if cuda else None,
@@ -65,7 +55,7 @@ def load_model_and_tok(base_id: str, lora_dir: str, token: str | None):
         use_auth_token=token,
         trust_remote_code=True,
     )
-
+    # Load the LoRA adapter on top of the base model
     model = PeftModel.from_pretrained(
         base, lora_dir, is_trainable=False,
         device_map="auto" if cuda else None,
@@ -83,9 +73,9 @@ def load_model_and_tok(base_id: str, lora_dir: str, token: str | None):
     return tok, model
 
 
-# ╭──────────────────── Assemble history into single prompt ─────────────────╮
+#  Assemble history into single prompt 
 def prompt_from_history(hist):
-    # hist = deque([(role, msg), ...])  role ∈ {"user","assistant"}
+    # hist is a deque of (role, message) pairs. role is either "user" or "assistant".
     parts = []
     for role, msg in hist:
         if role == "user":
@@ -95,7 +85,7 @@ def prompt_from_history(hist):
     return "".join(parts)
 
 
-# ╭──────────────────────────── Chat loop ───────────────────────────────────╮
+# Main function: runs the interactive chat loop
 def main():
     args = parse_args()
     hf_token = os.getenv("HF_HUB_TOKEN") or os.getenv("HF_TOKEN")
@@ -114,15 +104,15 @@ def main():
         history.append(("user", user_msg))
         prompt = prompt_from_history(history)
 
-        # tokenise + raccourcir si dépasse max_len
+        # Tokenize the prompt and truncate if it exceeds max length
         inputs = tok(prompt, return_tensors="pt").to(model.device)
         while inputs.input_ids.shape[-1] > args.max_len and len(history) > 1:
-            history.popleft()                        # retire le tour le plus ancien
+            history.popleft()                        #Remove the oldest message to make space
             prompt = prompt_from_history(history)
             inputs = tok(prompt, return_tensors="pt").to(model.device)
 
         prompt_len = inputs.input_ids.shape[-1]
-
+        # Generate model response without tracking gradients
         with torch.no_grad():
             gen_ids = model.generate(
                 **inputs,

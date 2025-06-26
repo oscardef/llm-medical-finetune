@@ -14,7 +14,7 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-# ───────────────────────────── Prompt formatting helpers ─────────────────────
+#  Prompt helpers 
 INST_OPEN, INST_CLOSE, EOS = "<s>[INST] ", " [/INST]", "</s>"
 
 def format_prompt(entry: Dict[str, str]) -> str:
@@ -34,7 +34,7 @@ def format_prompt(entry: Dict[str, str]) -> str:
 def format_response(entry: Dict[str, str]) -> str:
     return f"\n\n### Response:\n{entry['output'].strip()} {EOS}"
 
-# ─────────────────────────────────── Dataset ──────────────────────────────────
+#  Dataset 
 class InstructionDataset(torch.utils.data.Dataset):
     def __init__(self, json_files: List[str], tokenizer, max_len: int = 1024,
                  pct: float = 100.0, seed: int = 42):
@@ -78,7 +78,7 @@ class InstructionDataset(torch.utils.data.Dataset):
             "labels": torch.tensor(labels, dtype=torch.long),
         }
 
-# ───────────────────────────── Custom collate fn ─────────────────────────────
+#  Custom collate fn 
 @dataclass
 class CollateCfg:
     pad_id: int
@@ -101,7 +101,7 @@ def custom_collate(batch: List[Dict[str, torch.Tensor]], cfg: CollateCfg):
         out[k] = torch.stack(out[k]).to(cfg.device)
     return out
 
-# ─────────────────────────────── LoRA loader ─────────────────────────────────
+# LoRA loader
 
 def load_8bit_lora(model_id: str, hf_token: str | None):
     print(">>> Loading base model & applying LoRA …")
@@ -138,7 +138,7 @@ def load_8bit_lora(model_id: str, hf_token: str | None):
     model.print_trainable_parameters()
     return tok, model
 
-# ─────────────────────────────────── Main ────────────────────────────────────
+#  Main 
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Fine‑tune causal‑LM with LoRA on medical JSON datasets")

@@ -16,12 +16,9 @@ from transformers import (
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 
-################################################################################
-# LoRA fine‑tuning on *multiple* GPUs with DeepSpeed‑ZeRO‑3 (8‑bit base model)  #
-# --------------------------------------------------------------------------- #
-# ‑ NO Flash‑Attention.                                                        #
-# ‑ Device placement handled by DeepSpeed; we just set `device_map="balanced"`.#
-################################################################################
+
+# LoRA fine‑tuning on multiple GPUs with DeepSpeed‑ZeRO
+                                                        
 
 def parse_args():
     """Parse CLI arguments."""
@@ -62,7 +59,7 @@ def parse_args():
 
 
 def load_lora_model(base_id: str, auth_token: str | None = None):
-    """Load 8‑bit base model + add LoRA adapters (NO Flash‑Attention)."""
+    """Load 8 bit base model + add LoRA adapters (NO Flash‑Attention)."""
 
     # 1) 8‑bit BnB config
     bnb_cfg = BitsAndBytesConfig(
@@ -89,7 +86,7 @@ def load_lora_model(base_id: str, auth_token: str | None = None):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # 4) Base model (NO Flash‑Attention) — we rely on standard PyTorch attention.
+    # 4) Base model with no Flash‑Attention  rely on standard PyTorch attention.
     model = AutoModelForCausalLM.from_pretrained(
         base_id,
         config=cfg,
@@ -126,9 +123,7 @@ def load_lora_model(base_id: str, auth_token: str | None = None):
     return tokenizer, model
 
 
-#######################################################################
 #  Dataset helpers                                                   #
-#######################################################################
 
 def subset(ds, pct: float):
     if pct >= 100.0:
@@ -168,9 +163,9 @@ def build_dataset(tokenizer, args):
     return ds
 
 
-#######################################################################
-#  Main                                                              #
-#######################################################################
+
+#  Main                                                              
+
 
 def main():
     args = parse_args()
