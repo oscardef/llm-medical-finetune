@@ -205,7 +205,7 @@ def main():
     print(f">>> Saving adapter & tokenizer to {args.output_dir}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
-    print("✔ Training complete! ✨")
+    print("✔ Training complete! ")
 
 
 if __name__ == "__main__":
